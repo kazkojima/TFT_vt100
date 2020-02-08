@@ -915,7 +915,7 @@ STATE(_st_idle, term, ev, arg){
     }
     case '\r': { // carrage return (0x0d)
       term->cursor_x = 0; 
-      _vt100_move(term, 0, 1);
+      //_vt100_move(term, 0, 1);
       //_vt100_moveCursor(term, 0, term->cursor_y); 
       break;
     }
