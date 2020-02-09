@@ -34,15 +34,17 @@
 #else
 #define SerialPort Serial
 #endif
+// If set, use blinking cursor
+#define ENABLE_CURSOR 1
+#define CURSOR_COLOR TFT_GREEN
 
 #define VT100_SCREEN_WIDTH 320
 #define VT100_SCREEN_HEIGHT 240
 #define VT100_STATUS_AREA 16
-#define VT100_CHAR_WIDTH 5
+#define VT100_CHAR_WIDTH 6
 #define VT100_CHAR_HEIGHT 8
 #define VT100_HEIGHT ((VT100_SCREEN_HEIGHT-VT100_STATUS_AREA)/VT100_CHAR_HEIGHT)
 #define VT100_WIDTH  (VT100_SCREEN_WIDTH/VT100_CHAR_WIDTH)
-
 
 #define TFT_GREY 0x7BEF
 
@@ -61,6 +63,12 @@ void vt100_init(void (*send_response)(char *str));
 void vt100_putc(uint8_t ch);
 void vt100_puts(const char *str);
 
+void vt100_restore_cursor(void);
+void vt100_blink_cursor(void);
+
+unsigned long prev_millis, elapsed_millis;
+bool blinked = false;
+
 void setup() {
   M5.begin();
 
@@ -69,12 +77,15 @@ void setup() {
 #ifdef SERIAL2
   // Serial2.begin(unsigned long baud, uint32_t config, int8_t rxPin, int8_t txPin, bool invert)
   SerialPort.begin(115200, SERIAL_8N1, 16, 17);
+  char *serial_status = " UART2 115200 baud ";
+#else
+  char *serial_status = " UART 115200 baud ";
 #endif
   
   M5.Lcd.setTextColor(TFT_WHITE, TFT_GREY);
   M5.Lcd.fillRect(0, VT100_SCREEN_HEIGHT-VT100_STATUS_AREA,
 		  VT100_SCREEN_WIDTH, VT100_STATUS_AREA, TFT_GREY);
-  M5.Lcd.drawRightString(" UART2 115200 baud ",
+  M5.Lcd.drawRightString(serial_status,
 			 VT100_SCREEN_WIDTH,
 			 VT100_SCREEN_HEIGHT-VT100_STATUS_AREA+4, textSize);
 
@@ -83,14 +94,37 @@ void setup() {
   setupScrollArea(0, VT100_STATUS_AREA);
 
   vt100_init(response);
+
+  prev_millis = millis();
 }
 
 void loop(void) {
 
   while (SerialPort.available()) {
+#if ENABLE_CURSOR
+    if (blinked) {
+      vt100_restore_cursor();
+      blinked = false;
+    }
+#endif
     uint8_t ch = SerialPort.read();
     vt100_putc(ch);
   }
+
+#if ENABLE_CURSOR
+  unsigned long current_millis = millis();
+  elapsed_millis += current_millis - prev_millis;
+  prev_millis = current_millis;
+  if (elapsed_millis >= 500) {
+    elapsed_millis %= 500;
+    // blink cursor
+    blinked = !blinked;
+    if (blinked)
+      vt100_blink_cursor();
+    else
+      vt100_restore_cursor();
+  }
+#endif
 }
 
 /* Two ili9341 functions taken from TFT_Terminal program.  */
@@ -445,14 +479,14 @@ STATE(_st_esc_sq_bracket, term, ev, arg){
       case 'B': { // cursor down (cursor stops at bottom margin)
 	int n = (term->narg > 0)?term->args[0]:1;
 	term->cursor_y += n;
-	if(term->cursor_y > VT100_HEIGHT) term->cursor_y = VT100_HEIGHT; 
+	if(term->cursor_y > VT100_HEIGHT-1) term->cursor_y = VT100_HEIGHT-1; 
 	term->state = _st_idle; 
 	break;
       }
       case 'C': { // cursor right (cursor stops at right margin)
 	int n = (term->narg > 0)?term->args[0]:1;
 	term->cursor_x += n;
-	if(term->cursor_x > VT100_WIDTH) term->cursor_x = VT100_WIDTH;
+	if(term->cursor_x > VT100_WIDTH-1) term->cursor_x = VT100_WIDTH-1;
 	term->state = _st_idle; 
 	break;
       }
@@ -474,8 +508,8 @@ STATE(_st_esc_sq_bracket, term, ev, arg){
 	    term->cursor_y = term->scroll_end_row - 1;
 	  }
 	}
-	if(term->cursor_x > VT100_WIDTH) term->cursor_x = VT100_WIDTH;
-	if(term->cursor_y > VT100_HEIGHT) term->cursor_y = VT100_HEIGHT; 
+	if(term->cursor_x > VT100_WIDTH-1) term->cursor_x = VT100_WIDTH-1;
+	if(term->cursor_y > VT100_HEIGHT-1) term->cursor_y = VT100_HEIGHT-1; 
 	term->state = _st_idle; 
 	break;
       }
@@ -1002,3 +1036,30 @@ void vt100_putc(uint8_t c){
     }*/
   term.state(&term, EV_CHAR, 0x0000 | c);
 }
+
+#if defined(M5STACKLCD) && ENABLE_CURSOR
+/* Additional functions for blinking cursor.  */
+
+static uint16_t cursor_pixels[VT100_CHAR_WIDTH*VT100_CHAR_HEIGHT];
+
+void vt100_blink_cursor(void) {
+  struct vt100 *t = &term;
+  uint16_t x = VT100_CURSOR_X(t);
+  uint16_t y = VT100_CURSOR_Y(t);
+  uint16_t i, j;
+  for (i = 0; i < VT100_CHAR_WIDTH; i++)
+    for (j = 0; j < VT100_CHAR_HEIGHT; j++)
+      cursor_pixels[VT100_CHAR_HEIGHT*i + j] = M5.Lcd.readPixel(x+i,y+j);
+  M5.Lcd.fillRect(x, y+VT100_CHAR_HEIGHT-3,VT100_CHAR_WIDTH,2,CURSOR_COLOR);
+}
+
+void vt100_restore_cursor(void) {
+  struct vt100 *t = &term;
+  uint16_t x = VT100_CURSOR_X(t);
+  uint16_t y = VT100_CURSOR_Y(t);
+  uint16_t i, j;
+  for (i = 0; i < VT100_CHAR_WIDTH; i++)
+    for (j = 0; j < VT100_CHAR_HEIGHT; j++)
+      M5.Lcd.drawPixel(x+i,y+j,cursor_pixels[VT100_CHAR_HEIGHT*i + j]);
+}
+#endif
